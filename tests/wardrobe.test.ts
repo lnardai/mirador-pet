@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HATS, MESSAGES_UNTIL_SURE_FIND, SKINS, afterMessage, describeFind, newWardrobe, openBox, pickFind, wardrobeOf, wearing, type HatId, type SkinId } from "../wardrobe.ts";
+import { HATS, MESSAGES_UNTIL_SURE_FIND, SKINS, afterMessage, describeFind, newWardrobe, openBox, pickFind, wardrobeOf, wearing, withMilestoneBoxes, type HatId, type SkinId } from "../wardrobe.ts";
 
 /** A random source that returns these values in turn. */
 const rolls = (...values: number[]) => () => values.shift() ?? 0;
@@ -97,4 +97,33 @@ describe("wearing", () => {
 test("describeFind", () => {
   expect(describeFind({ kind: "hat", id: "crown" })).toBe("a legendary crown");
   expect(describeFind({ kind: "skin", id: "stripes" })).toBe("a rare striped skin");
+});
+
+describe("milestone boxes", () => {
+  test("add a box and leave the wait for the next find alone", () => {
+    const wardrobe = { ...newWardrobe(), messagesSinceFind: 12 };
+    const rewarded = withMilestoneBoxes(wardrobe, ["tools-100"], () => 0);
+    expect(rewarded.finds.length).toBe(1);
+    expect(rewarded.wardrobe.boxes).toEqual(rewarded.finds);
+    expect(rewarded.wardrobe.messagesSinceFind).toBe(12);
+    expect(rewarded.wardrobe.milestones).toEqual(["tools-100"]);
+  });
+
+  test("two at once hold different finds", () => {
+    const { finds } = withMilestoneBoxes(newWardrobe(), ["tools-100", "messages-100"], () => 0);
+    expect(finds.length).toBe(2);
+    expect(finds[0]).not.toEqual(finds[1]);
+  });
+
+  test("count as rewarded once there is nothing left to find", () => {
+    const everything = { ...newWardrobe(), hats: Object.keys(HATS) as HatId[], skins: Object.keys(SKINS) as SkinId[] };
+    const rewarded = withMilestoneBoxes(everything, ["streak-7"]);
+    expect(rewarded.finds).toEqual([]);
+    expect(rewarded.wardrobe.boxes).toEqual([]);
+    expect(rewarded.wardrobe.milestones).toEqual(["streak-7"]);
+  });
+
+  test("a wardrobe stored before milestones has none", () => {
+    expect(wardrobeOf({ hats: ["beanie"], skins: ["ink"] }).milestones).toEqual([]);
+  });
 });

@@ -44,6 +44,8 @@ export interface Wardrobe {
   /** Finds still in their boxes, oldest first: what is in them stays out of the wardrobe until the user opens them. */
   boxes: Find[];
   messagesSinceFind: number;
+  /** The milestones that have already brought their box. */
+  milestones: string[];
 }
 
 /** How likely each rarity is when something is found. */
@@ -62,7 +64,7 @@ const isFind = (find: unknown): find is Find => {
   return kind === "hat" ? isHat(id) : kind === "skin" && isSkin(id);
 };
 
-export const newWardrobe = (): Wardrobe => ({ hats: ["beanie"], skins: ["ink", "slate"], hat: null, hatSkin: null, bodySkin: "ink", boxes: [], messagesSinceFind: 0 });
+export const newWardrobe = (): Wardrobe => ({ hats: ["beanie"], skins: ["ink", "slate"], hat: null, hatSkin: null, bodySkin: "ink", boxes: [], messagesSinceFind: 0, milestones: [] });
 
 export function wardrobeOf(stored: unknown): Wardrobe {
   const wardrobe = { ...newWardrobe(), ...(stored as Partial<Wardrobe> | undefined) };
@@ -76,6 +78,7 @@ export function wardrobeOf(stored: unknown): Wardrobe {
     bodySkin: isSkin(wardrobe.bodySkin) ? wardrobe.bodySkin : "ink",
     boxes: Array.isArray(wardrobe.boxes) ? wardrobe.boxes.filter(isFind) : [],
     messagesSinceFind: typeof wardrobe.messagesSinceFind === "number" ? wardrobe.messagesSinceFind : 0,
+    milestones: Array.isArray(wardrobe.milestones) ? wardrobe.milestones.filter((id) => typeof id === "string") : [],
   };
 }
 
@@ -118,6 +121,21 @@ export function afterMessage(wardrobe: Wardrobe, random = Math.random, alwaysFin
   const find = lucky ? pickFind(wardrobe, random) : null;
   if (!find) return { wardrobe: { ...wardrobe, messagesSinceFind }, find: null };
   return { wardrobe: { ...wardrobe, boxes: [...wardrobe.boxes, find], messagesSinceFind: 0 }, find };
+}
+
+/**
+ * The wardrobe with a box for each milestone, marked rewarded even once nothing is left to find, so it can't reward twice.
+ * It leaves the wait for the next find as it was: a milestone is a bonus.
+ */
+export function withMilestoneBoxes(wardrobe: Wardrobe, milestoneIds: string[], random = Math.random): { wardrobe: Wardrobe; finds: Find[] } {
+  const finds: Find[] = [];
+  let next = wardrobe;
+  for (const id of milestoneIds) {
+    const find = pickFind(next, random);
+    if (find) finds.push(find);
+    next = { ...next, boxes: find ? [...next.boxes, find] : next.boxes, milestones: [...next.milestones, id] };
+  }
+  return { wardrobe: next, finds };
 }
 
 /** The wardrobe with its oldest box opened, what was in it now found, and what that was. */

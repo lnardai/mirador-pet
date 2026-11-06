@@ -198,7 +198,19 @@ style.textContent = `
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 6px; width: 100%; max-width: 340px; margin: 4px 0 0; }
   .stats div { padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, CanvasText 6%, transparent); text-align: center; }
   .stats dt { font-size: 11px; opacity: 0.65; }
-  .stats dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stats dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .usage { width: 100%; max-width: 340px; }
+  .usage h4 { margin: 8px 0 0; font-size: 11px; font-weight: 600; opacity: 0.65; text-transform: uppercase; letter-spacing: 0.04em; text-align: center; }
+  .scene.raining { background: linear-gradient(#77838f, #a9b3bb); }
+  .scene.dawn.raining, .scene.dusk.raining { background: linear-gradient(#6d6a80, #a39aa3); }
+  .scene.night.raining { background: linear-gradient(#12172b, #232b47); }
+  .raining .sun, .raining .moon { opacity: 0.25; box-shadow: none; }
+  .raining .stars { display: none; }
+  .raining .ground { filter: saturate(0.6) brightness(0.85); }
+  .scene:not(.raining) .rain { display: none; }
+  .rain i { position: absolute; top: -14px; width: 1.5px; height: 11px; border-radius: 1px; background: #dcebf7; opacity: 0.75; transform: rotate(10deg); animation: fall 0.8s linear infinite; }
+  .night .rain i { background: #8fa6cf; }
+  @keyframes fall { to { transform: translate(-46px, 300px) rotate(10deg); } }
   @keyframes wave { 0%, 100% { transform: rotate(0); } 25%, 75% { transform: rotate(-70deg); } 50% { transform: rotate(-45deg); } }
   @keyframes stretch-left { 0%, 100% { transform: rotate(0); } 35%, 70% { transform: rotate(60deg); } }
   @keyframes stretch-right { 0%, 100% { transform: rotate(0); } 35%, 70% { transform: rotate(-60deg); } }
@@ -220,7 +232,7 @@ style.textContent = `
   @keyframes fade-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
   @keyframes think { 0%, 70%, 100% { opacity: 0.3; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-4px); } }
   @keyframes rise { from { transform: translate(-50%, 20px); opacity: 1; } to { transform: translate(-50%, -20px); opacity: 0; } }
-  @media (prefers-reduced-motion: reduce) { .body, .eye, .bubble, .bubble > span, .dots i, .emote, .emote *, .boxes button, .ceremony, .ceremony * { animation: none !important; transition: none !important; } }
+  @media (prefers-reduced-motion: reduce) { .body, .eye, .bubble, .bubble > span, .dots i, .emote, .emote *, .boxes button, .ceremony, .ceremony * { animation: none !important; transition: none !important; } .rain i { animation: none !important; top: var(--still-top); } }
 `;
 document.head.append(style);
 
@@ -267,10 +279,23 @@ function placeOnArc(element, progress) {
   element.style.top = `${72 - Math.sin(Math.PI * progress) * 62}%`;
 }
 
+/** Steps of the R2 sequence: where a drop falls and when never line up, so rain has no visible pattern. */
+const DROP_PLACE_STEP = 0.7548776662;
+const DROP_PHASE_STEP = 0.569840291;
+
+/** Rain falls while the agent's tool calls keep failing; each drop's left in percent of the scene, delay and how far down it rests without motion. */
+const RAINDROPS = Array.from({ length: 34 }, (_, index) => {
+  const place = (index * DROP_PLACE_STEP) % 1;
+  const phase = (index * DROP_PHASE_STEP) % 1;
+  return `<i style="left:${(4 + place * 112).toFixed(1)}%;animation-delay:-${(phase * 0.8).toFixed(2)}s;--still-top:${(phase * 90).toFixed(1)}%"></i>`;
+}).join("");
+
+let rainUntil = 0;
+
 /** The sky follows the user's local time: the sun crosses it by day, the moon and stars by night. */
 function drawSky(now = new Date()) {
   const hour = now.getHours() + now.getMinutes() / 60;
-  part(".scene").className = `scene ${phaseAt(hour)}`;
+  part(".scene").className = `scene ${phaseAt(hour)}${rainUntil > now.getTime() ? " raining" : ""}`;
   const daylight = SUNSET - SUNRISE;
   if (hour >= SUNRISE && hour < SUNSET) placeOnArc(part(".sun"), (hour - SUNRISE) / daylight);
   placeOnArc(part(".moon"), ((hour - SUNSET + 24) % 24) / (24 - daylight));
@@ -301,6 +326,7 @@ root.innerHTML = `
       <div class="stars">${STARS.map(([x, y]) => `<i style="left:${x}%;top:${y}%"></i>`).join("")}</div>
       <div class="sun"></div><div class="moon"></div>
       <div class="ground"></div>
+      <div class="rain">${RAINDROPS}</div>
       <div class="boxes"></div>
       <div class="speech"><div class="bubble"></div></div>
       <div class="stage">${PET_SVG}</div>
@@ -317,7 +343,8 @@ root.innerHTML = `
       <h4>Hat skin</h4><div class="tiles hat-skins"></div>
       <h4>Body skin</h4><div class="tiles body-skins"></div>
     </details>
-    <dl class="stats"></dl>
+    <dl class="stats here"></dl>
+    <section class="usage" hidden><h4>Last 30 days</h4><dl class="stats month"></dl></section>
   </div>
   <div class="ceremony" hidden role="dialog" aria-label="Opening a box">
     <div>
@@ -368,12 +395,16 @@ function followPointer({ clientX, clientY }) {
 document.addEventListener("pointermove", followPointer);
 document.documentElement.addEventListener("pointerleave", () => (part(".pupil").style.transform = ""));
 
-/** The little bubbles beside the pet's head: an idea, anger, or being dazed. */
+/** The little bubbles beside the pet's head: an idea, anger, being dazed, or a tool call that just failed. */
 const EMOTES = {
   idea: `<svg width="24" height="24" viewBox="0 0 24 24" aria-label="Idea"><g class="rays" stroke="#f0b400" stroke-width="1.6" stroke-linecap="round"><path d="M12 1.5v2M3.5 5l1.5 1.4M20.5 5 19 6.4M2 12h2M20 12h2"/></g><path d="M12 5.5a5.5 5.5 0 0 0-3.2 10c.6.5.9 1.1.9 1.8h4.6c0-.7.3-1.3.9-1.8A5.5 5.5 0 0 0 12 5.5Z" fill="#ffd54a" stroke="#222" stroke-width="1.2"/><rect x="9.6" y="18.2" width="4.8" height="3.2" rx="1" fill="#9aa0a6" stroke="#222" stroke-width="1"/></svg>`,
   angry: `<svg width="24" height="24" viewBox="0 0 24 24" aria-label="Angry"><path class="vein" d="M4 10Q10 10 10 4M14 4Q14 10 20 10M20 14Q14 14 14 20M10 20Q10 14 4 14" fill="none" stroke="#e03131" stroke-width="2.6" stroke-linecap="round"/></svg>`,
   dazed: `<svg width="24" height="24" viewBox="0 0 24 24" aria-label="Dazed"><path class="spiral" d="M12 12m-1 0a1 1 0 1 1 2 0a2.5 2.5 0 1 1-5 0a4 4 0 1 1 8 0a5.5 5.5 0 1 1-11 0a7 7 0 0 1 7-7" fill="none" stroke="#7b5cd6" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  oops: `<svg width="24" height="24" viewBox="0 0 24 24" aria-label="Something failed"><path class="vein" d="M12 3v11" fill="none" stroke="#e03131" stroke-width="4" stroke-linecap="round"/><circle cx="12" cy="20" r="2.4" fill="#e03131"/></svg>`,
 };
+
+/** The emotes the pet shows on its own; a failure's is only for a failure. */
+const IDLE_EMOTES = ["idea", "angry", "dazed"];
 
 const EMOTE_MS = 2600;
 let emoteTimer = null;
@@ -414,7 +445,7 @@ function move(name) {
 function idle() {
   if (!document.hidden && part(".pet").className.includes(" ")) {
     const mode = part(".pet").classList[1];
-    if (Math.random() < IDLE_EMOTE_SHARE) emote(MODE_EMOTES[mode] ?? Object.keys(EMOTES)[Math.floor(Math.random() * 3)]);
+    if (Math.random() < IDLE_EMOTE_SHARE) emote(MODE_EMOTES[mode] ?? IDLE_EMOTES[Math.floor(Math.random() * IDLE_EMOTES.length)]);
     else if (mode !== "quiet" || Math.random() < 0.3) move(MOVES[Math.floor(Math.random() * MOVES.length)]);
   }
   setTimeout(idle, IDLE_MIN_MS + Math.random() * IDLE_SPREAD_MS);
@@ -469,29 +500,53 @@ function duration(ms) {
 const STATS_TICK_MS = 30 * 1000;
 
 let shownStats = null;
+let shownUsage = null;
+
+const statTiles = (rows) =>
+  rows.map(([label, value]) => {
+    const row = document.createElement("div");
+    const term = document.createElement("dt");
+    const detail = document.createElement("dd");
+    term.textContent = label;
+    detail.textContent = value;
+    row.append(term, detail);
+    return row;
+  });
+
+const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+
+function drawUsage() {
+  const usage = shownUsage;
+  part(".usage").hidden = !usage;
+  if (!usage) return;
+  const percent = (value) => (value === null ? "–" : `${value}%`);
+  part(".month").replaceChildren(
+    ...statTiles([
+      ["Tokens written", compact.format(usage.outputTokens)],
+      ["Cache hits", percent(usage.cacheHitPercent)],
+      ["Tools succeeded", percent(usage.toolSuccessPercent)],
+      ["Favourite tool", usage.favouriteTool ?? "–"],
+      ["You reply in", usage.medianReplySeconds === null ? "–" : usage.medianReplySeconds < 60 ? `${Math.round(usage.medianReplySeconds)}s` : duration(usage.medianReplySeconds * 1000)],
+      ["Permission asks", String(usage.permissionPrompts)],
+    ]),
+  );
+}
 
 function drawStats() {
   const stats = shownStats;
-  if (!stats) return part(".stats").replaceChildren();
+  if (!stats) return part(".here").replaceChildren();
   const rows = [
     ["Messages here", String(stats.messages)],
+    ["Agent turns", String(stats.turns ?? 0)],
+    ["Tool calls here", String(stats.toolCalls ?? 0)],
+    ["Failed tools", String(stats.failedTools ?? 0)],
     ["Session", stats.firstAt === null ? "–" : duration(Date.now() - stats.firstAt)],
     ["Active", duration(stats.activeMs)],
     ["Longest focus", duration(stats.longestStreakMs)],
     ["Day streak", `${stats.dayStreak} ${stats.dayStreak === 1 ? "day" : "days"}`],
     ["After midnight", String(stats.nightOwl)],
   ];
-  part(".stats").replaceChildren(
-    ...rows.map(([label, value]) => {
-      const row = document.createElement("div");
-      const term = document.createElement("dt");
-      const detail = document.createElement("dd");
-      term.textContent = label;
-      detail.textContent = value;
-      row.append(term, detail);
-      return row;
-    }),
-  );
+  part(".here").replaceChildren(...statTiles(rows));
 }
 
 setInterval(() => (drawStats(), drawSky()), STATS_TICK_MS);
@@ -624,6 +679,14 @@ part(".wear-prize").addEventListener("click", () => {
 part(".keep-prize").addEventListener("click", closeCeremony);
 document.addEventListener("keydown", (event) => event.key === "Escape" && part(".ceremony").classList.contains("opened") && closeCeremony());
 
+/** The newest failure seen: only a newer one makes the pet react, not the one it shows on opening. */
+let seenFailureAt = null;
+
+function reactToFailure(failedAt = 0) {
+  if (seenFailureAt !== null && failedAt > seenFailureAt) emote("oops");
+  seenFailureAt = failedAt;
+}
+
 function draw(pet) {
   part(".pet").className = `pet ${pet.mode}`;
   part(".stage").title = `Pat ${pet.name}`;
@@ -634,6 +697,11 @@ function draw(pet) {
   part(".meta").textContent = `Patted ${pet.pats} times`;
   shownStats = pet.stats ?? null;
   drawStats();
+  shownUsage = pet.usage ?? null;
+  drawUsage();
+  reactToFailure(pet.lastFailureAt);
+  rainUntil = pet.rainUntil ?? 0;
+  drawSky();
   const wardrobe = pet.wardrobe ?? { hats: [], skins: ["ink"], hat: null, hatSkin: null, bodySkin: "ink", boxes: [] };
   drawWardrobe(wardrobe);
   boxes = wardrobe.boxes ?? [];

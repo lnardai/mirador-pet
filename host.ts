@@ -1,7 +1,8 @@
-import type { CanvasHost, CanvasPluginContext } from "./mirador/api.ts";
+import type { CanvasHost, CanvasPluginContext, CanvasPluginStorage } from "./mirador/api.ts";
 import { askForLine, readAlwaysFind, readConfig, readUnlockAll, type ModelConfig } from "./model.ts";
-import { activityOf, statFacts, statsOf, withMessageIn, type Stats } from "./stats.ts";
-import { HATS, SKINS, afterMessage, describeFind, openBox, owned, wardrobeOf, wearing, type Wardrobe } from "./wardrobe.ts";
+import { RAIN_LASTS_MS, activityOf, newMilestones, statFacts, statsOf, tooManyFailures, withMessageIn, withToolEnded, withToolOutcome, withTurnEnded, type Stats, type ToolOutcome } from "./stats.ts";
+import { readUsage, usageFacts, type UsageNumbers } from "./usage.ts";
+import { HATS, SKINS, afterMessage, describeFind, openBox, owned, wardrobeOf, wearing, withMilestoneBoxes, type Wardrobe } from "./wardrobe.ts";
 
 /** How the pet talks, as the user picks it, and what the model is told each one means. The view lists the same modes. */
 export const MODE_STYLES = {
@@ -58,9 +59,15 @@ export interface ShownPet extends Pet {
   stats?: Stats;
   /** What the pet wears, and what it can. */
   wardrobe?: ShownWardrobe;
+  /** The last 30 days from Mirador's usage report; absent when the report can't be read. */
+  usage?: UsageNumbers | null;
+  /** When one of the agent's tool calls last failed here: a newer one makes the pet react. */
+  lastFailureAt?: number;
+  /** It rains over the pet until then. */
+  rainUntil?: number;
 }
 
-export type ShownWardrobe = Omit<Wardrobe, "messagesSinceFind">;
+export type ShownWardrobe = Omit<Wardrobe, "messagesSinceFind" | "milestones">;
 
 /** The one pet every conversation shares, kept in the plugin's storage. */
 const PET_KEY = "pet";
@@ -76,6 +83,12 @@ const STAT_IN_PAT_LINE = 1 / 3;
 
 /** Pats closer together than this get no new line, so patting fast doesn't flood the model. */
 const PATS_BETWEEN_LINES_MS = 4000;
+
+/** Tool calls can come many a second: the shown stats follow them this often, while a failure and a turn's end show at once. */
+const TOOL_STATS_EVERY_MS = 5000;
+
+/** How long the last usage report stays good before it is read again. */
+const USAGE_FRESH_MS = 10 * 60 * 1000;
 
 const newPet = (): Pet => ({ name: "Pip", mode: "encouraging", alignment: "neutral good", pats: 0 });
 
@@ -96,16 +109,55 @@ function changed(pet: Pet, action: unknown): Pet {
 
 const statsFor = (context: CanvasPluginContext<ShownPet>) => statsOf(activityOf(context.storage.get(ACTIVITY_KEY)), context.conversationId, Date.now());
 
+const shownIn = (context: CanvasPluginContext<ShownPet>) => context.items().findLast(({ type, dismissed }) => type === "pet" && !dismissed);
+
+/**
+ * The activity hook belongs to no conversation, so it can't change an item; this keeps each conversation's context from
+ * the user's own doing. A tool's context wouldn't do: changing an item through it would flash the tab's toggle as the agent's change.
+ */
+const userContexts = new Map<string, CanvasPluginContext<ShownPet>>();
+
+interface Weather {
+  recent: ToolOutcome[];
+  lastFailureAt?: number;
+  rainUntil?: number;
+}
+
+/** How the agent's tool calls have gone lately in each conversation; a restart clears the skies. */
+const weather = new Map<string, Weather>();
+
+const shownWeather = (conversationId: string) => {
+  const { lastFailureAt, rainUntil } = weather.get(conversationId) ?? {};
+  return { lastFailureAt, rainUntil };
+};
+
+let usage: UsageNumbers | null = null;
+let usageReadAt = 0;
+let readingUsage = false;
+
+/** Reads the usage report again when it is old, in the background, and shows it on the pet here once it arrives. */
+function refreshUsage(context: CanvasPluginContext<ShownPet>) {
+  if (readingUsage || Date.now() - usageReadAt < USAGE_FRESH_MS) return;
+  readingUsage = true;
+  void readUsage().then((numbers) => {
+    readingUsage = false;
+    usage = numbers;
+    usageReadAt = Date.now();
+    const shown = shownIn(context);
+    if (shown) showOnItem(shown.id, { usage }, context);
+  });
+}
+
 const wardrobeIn = (context: CanvasPluginContext<ShownPet>) => wardrobeOf(context.storage.get(WARDROBE_KEY));
 
 function shownWardrobe(wardrobe: Wardrobe): ShownWardrobe {
-  const { messagesSinceFind: _, ...shown } = wardrobe;
+  const { messagesSinceFind: _, milestones: __, ...shown } = wardrobe;
   return { ...shown, ...owned(wardrobe, readUnlockAll()) };
 }
 
 /** One of the user's stats for the model to bring up, when there is one and, below 1, as often as `chance` says. */
 function factFor(stats: Stats, chance = 1): string | undefined {
-  const facts = statFacts(stats, Date.now());
+  const facts = [...statFacts(stats, Date.now()), ...usageFacts(usage)];
   if (facts.length === 0 || Math.random() >= chance) return undefined;
   return facts[Math.floor(Math.random() * facts.length)];
 }
@@ -121,6 +173,9 @@ function eventOf(action: unknown, pet: Pet, wardrobe: Wardrobe): string {
 }
 
 let lastLineAt = 0;
+
+/** When the stats of each conversation's pet last followed a tool call. */
+const lastToolStatsAt = new Map<string, number>();
 
 /** The newest question to the model for each item; an older one's answer comes too late to show. */
 const newestAsk = new Map<string, number>();
@@ -145,6 +200,17 @@ function speak(itemId: string, pet: Pet, event: string, fact: string | undefined
     newestAsk.delete(itemId);
     showOnItem(itemId, line ? { line, thinking: false } : { thinking: false }, context);
   });
+}
+
+/** Gives a box for each milestone just reached, and what the pet should say about them, if any. */
+function rewardMilestones(storage: CanvasPluginStorage, at: number): string | null {
+  const wardrobe = wardrobeOf(storage.get(WARDROBE_KEY));
+  const reached = newMilestones(activityOf(storage.get(ACTIVITY_KEY)), wardrobe.milestones, at);
+  if (reached.length === 0) return null;
+  const rewarded = withMilestoneBoxes(wardrobe, reached.map(({ id }) => id));
+  storage.set(WARDROBE_KEY, rewarded.wardrobe);
+  const news = `A milestone: ${reached.map(({ says }) => says).join(", and ")}!`;
+  return rewarded.finds.length > 0 ? `${news} You found a mystery box for them to celebrate. Tell them to open it, without guessing what is inside.` : `${news} Congratulate them.`;
 }
 
 /** Puts on what the user picked; a new outfit gets a line, as often as a pat does. */
@@ -182,12 +248,14 @@ const host: CanvasHost<ShownPet> = {
     pet: {
       description: "Show the user's pet in the tab beside the canvas. Call it when the user asks to see their pet.",
       input: { type: "object", properties: {} },
+      command: { description: "Show your pet" },
       run(_input, context) {
         const pet = petOf(context);
         const config = readConfig();
         const stats = statsFor(context);
         const wardrobe = wardrobeIn(context);
-        const item = context.publish({ type: "pet", title: pet.name, data: { ...pet, thinking: config !== null, stats, wardrobe: shownWardrobe(wardrobe) } });
+        const item = context.publish({ type: "pet", title: pet.name, data: { ...pet, thinking: config !== null, stats, wardrobe: shownWardrobe(wardrobe), usage, ...shownWeather(context.conversationId) } });
+        refreshUsage(context);
         const boxes = wardrobe.boxes.length;
         const event = boxes
           ? `The user just opened your window. While they worked, you found ${boxes === 1 ? "a mystery box" : `${boxes} mystery boxes`} for them. Tell them to open it, without guessing what is inside.`
@@ -201,6 +269,8 @@ const host: CanvasHost<ShownPet> = {
     instructions: "- pet: show the user's pet in the tab beside the canvas when they ask for it.",
   },
   action(item, action, context) {
+    userContexts.set(context.conversationId, context);
+    refreshUsage(context);
     const kind = (action as { kind?: unknown } | null)?.kind;
     if (kind === "wear") return dress(item, action, context);
     if (kind === "open") return open(item, context);
@@ -217,15 +287,50 @@ const host: CanvasHost<ShownPet> = {
   },
   /** Counts the user's message, which a turn starting means, maybe finds something, and updates the pet here; the agent hears nothing. */
   note(context) {
-    context.storage.set(ACTIVITY_KEY, withMessageIn(activityOf(context.storage.get(ACTIVITY_KEY)), context.conversationId, Date.now()));
+    userContexts.set(context.conversationId, context);
+    const now = Date.now();
+    context.storage.set(ACTIVITY_KEY, withMessageIn(activityOf(context.storage.get(ACTIVITY_KEY)), context.conversationId, now));
     const { wardrobe, find } = afterMessage(wardrobeIn(context), Math.random, readAlwaysFind());
     context.storage.set(WARDROBE_KEY, wardrobe);
-    const shown = context.items().findLast(({ type, dismissed }) => type === "pet" && !dismissed);
+    const milestone = rewardMilestones(context.storage, now);
+    refreshUsage(context);
+    const shown = shownIn(context);
     if (!shown) return null;
-    const config = find ? readConfig() : null;
-    context.change(shown.id, { data: { ...shown.data, stats: statsFor(context), wardrobe: shownWardrobe(wardrobe), ...(config ? { thinking: true } : {}) } });
-    if (find && config) speak(shown.id, petOf(context), "You just found a mystery box for them while they worked! Tell them to open it, without guessing what is inside.", undefined, config, context);
+    const event = milestone ?? (find ? "You just found a mystery box for them while they worked! Tell them to open it, without guessing what is inside." : null);
+    const config = event ? readConfig() : null;
+    context.change(shown.id, { data: { ...shown.data, stats: statsFor(context), wardrobe: shownWardrobe(wardrobeIn(context)), ...(config ? { thinking: true } : {}) } });
+    if (event && config) speak(shown.id, petOf(context), event, undefined, config, context);
     return null;
+  },
+  /** Counts the agent's tool calls and turns everywhere, and shows them on the pet in a conversation the user has touched since Mirador started; messages stay with `note`. */
+  activity(event, { storage }) {
+    if (event.kind !== "tool-ended" && event.kind !== "turn-ended") return;
+    const { conversationId, at } = event;
+    const activity = activityOf(storage.get(ACTIVITY_KEY));
+    let urgent = true;
+    let rainStarted = false;
+    let milestone: string | null = null;
+    if (event.kind === "turn-ended") storage.set(ACTIVITY_KEY, withTurnEnded(activity, conversationId, event.ended === "finished", at));
+    else {
+      storage.set(ACTIVITY_KEY, withToolEnded(activity, conversationId, event.failed, at));
+      milestone = rewardMilestones(storage, at);
+      const before = weather.get(conversationId);
+      const recent = withToolOutcome(before?.recent ?? [], event.failed, at);
+      const rainUntil = event.failed && tooManyFailures(recent) ? at + RAIN_LASTS_MS : before?.rainUntil;
+      weather.set(conversationId, { recent, lastFailureAt: event.failed ? at : before?.lastFailureAt, rainUntil });
+      rainStarted = rainUntil !== undefined && rainUntil > at && (before?.rainUntil ?? 0) <= at;
+      urgent = event.failed || milestone !== null;
+    }
+    const context = userContexts.get(conversationId);
+    if (!context) return;
+    if (event.kind === "turn-ended") refreshUsage(context);
+    const shown = shownIn(context);
+    if (!shown || (!urgent && at - (lastToolStatsAt.get(conversationId) ?? 0) < TOOL_STATS_EVERY_MS)) return;
+    lastToolStatsAt.set(conversationId, at);
+    const line = milestone ?? (rainStarted ? "Many of the agent's tool calls just failed, and it started to rain on you. React to the rain, in a sentence, without guessing what went wrong." : null);
+    const config = line ? readConfig() : null;
+    context.change(shown.id, { data: { ...shown.data, stats: statsFor(context), wardrobe: shownWardrobe(wardrobeIn(context)), ...shownWeather(conversationId), ...(config ? { thinking: true } : {}) } });
+    if (line && config) speak(shown.id, petOf(context), line, undefined, config, context);
   },
 };
 

@@ -1,5 +1,5 @@
 /**
- * Mirador's canvas plugin API, version 5, as this plugin uses it. Mirador doesn't publish these types yet, so this is a
+ * Mirador's canvas plugin API, version 6, as this plugin uses it. Mirador doesn't publish these types yet, so this is a
  * copy of its shared/canvas-plugins.ts.
  */
 
@@ -105,6 +105,29 @@ export interface ConversationReply {
   ended: "finished" | "stopped" | "failed";
 }
 
+/**
+ * Something that happened in a conversation, for a plugin's `activity`: the user sent a message, the agent's turn began
+ * or ended, or one of its tool calls began or ended. It carries no message text and no tool arguments.
+ */
+export type PluginActivity =
+  | { kind: "user-message" }
+  | { kind: "turn-started" }
+  | { kind: "turn-ended"; ended: ConversationReply["ended"] }
+  | { kind: "tool-started"; toolCallId: string; toolKind: string | null }
+  | { kind: "tool-ended"; toolCallId: string; failed: boolean };
+
+export type PluginActivityEvent = PluginActivity & { conversationId: string; conversationTitle: string; at: number };
+
+/** What the activity hook reaches: the plugin's storage, and its window's state. It belongs to no conversation, so it can't change items. */
+export interface PluginActivityContext {
+  /** What the plugin keeps across conversations and restarts; values are JSON. */
+  storage: CanvasPluginStorage;
+  /** Mirador asks `window.state` again soon after, and hands what it returns to the plugin's open windows. */
+  windowChanged(): void;
+  /** One of the plugin's profile settings as the event's conversation has it, as `profileSetting` reads it in a tool. */
+  profileSetting(id: string): string | null;
+}
+
 /** A tool the agent calls on the canvas server, next to show, ask and the rest. */
 export interface CanvasTool<Data = unknown> {
   description: string;
@@ -112,6 +135,11 @@ export interface CanvasTool<Data = unknown> {
   input: Record<string, unknown>;
   /** Resolves to the text the agent gets. What it throws reaches the agent as a tool error, so its message should say what would work. */
   run(input: unknown, context: CanvasToolContext<Data>): string | Promise<string>;
+  /**
+   * Lists the tool in the slash menu as /<plugin>:<tool>, with this description, for the user to run without the agent,
+   * its arguments written as key=value after the name. What run resolves to shows above the composer, and the agent hears nothing of it.
+   */
+  command?: { description: string };
 }
 
 /** What the agent hears with the user's next message; heard() runs once that message went. */
@@ -149,4 +177,6 @@ export interface CanvasHost<Data = unknown> {
    * a plugin's tool started gets none.
    */
   guidanceFor?(profileSetting: (id: string) => string | null): { instructions?: string; often?: string } | null;
+  /** Every conversation's activity, as it happens. It runs after the event, never holding up the agent. */
+  activity?(event: PluginActivityEvent, context: PluginActivityContext): void | Promise<void>;
 }
