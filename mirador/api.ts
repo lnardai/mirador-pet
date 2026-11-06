@@ -1,6 +1,7 @@
 /**
  * Mirador's canvas plugin API, version 6, as this plugin uses it. Mirador doesn't publish these types yet, so this is a
- * copy of its shared/canvas-plugins.ts.
+ * copy of its shared/canvas-plugins.ts: https://github.com/sodre90/mirador, Copyright (c) 2026 Péter Erdős, under the
+ * MIT licence, whose terms are in this repo's LICENSE.
  */
 
 /**
