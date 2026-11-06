@@ -215,6 +215,13 @@ style.textContent = `
   .model-dialog button { padding: 3px 12px; font: inherit; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); background: Canvas; color: inherit; cursor: pointer; }
   .model-dialog .save { font-weight: 600; background: color-mix(in srgb, CanvasText 12%, Canvas); }
   .model-dialog button:disabled { cursor: default; opacity: 0.5; }
+  .naming { display: flex; justify-content: center; min-height: 24px; }
+  .naming .name { display: inline-flex; align-items: center; gap: 5px; padding: 1px 4px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; cursor: pointer; }
+  .naming .name:hover { background: color-mix(in srgb, CanvasText 8%, transparent); }
+  .naming .name svg { opacity: 0.4; }
+  .naming .name:hover svg, .naming .name:focus-visible svg { opacity: 0.9; }
+  .naming .name[hidden], .name-field[hidden] { display: none; }
+  .name-field { width: 170px; padding: 1px 6px; font: inherit; font-weight: 600; text-align: center; user-select: text; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 40%, transparent); background: Canvas; color: inherit; }
   .usage { width: 100%; max-width: 340px; }
   .usage h4 { margin: 8px 0 0; font-size: 11px; font-weight: 600; opacity: 0.65; text-transform: uppercase; letter-spacing: 0.04em; text-align: center; }
   .scene.raining { background: linear-gradient(#77838f, #a9b3bb); }
@@ -348,7 +355,10 @@ root.innerHTML = `
       <div class="speech"><div class="bubble"></div></div>
       <div class="stage">${PET_SVG}</div>
     </div>
-    <strong class="name"></strong>
+    <div class="naming">
+      <button class="name" type="button" title="Rename"><strong class="name-text"></strong><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l1-5L16 4l4 4L9 19z"/></svg></button>
+      <input class="name-field" type="text" maxlength="24" hidden aria-label="The pet's name" autocomplete="off" spellcheck="false">
+    </div>
     <div class="choices">
       <label>Mode <select class="mode">${options(Object.keys(LINES))}</select></label>
       <label>Alignment <select class="alignment">${options(ALIGNMENTS)}</select></label>
@@ -780,6 +790,32 @@ part(".model-dialog form").addEventListener("submit", (event) => {
   });
 });
 
+/** Renaming: click the name, then Enter or clicking away keeps it, and Escape or an empty field leaves the old one. */
+function endRenaming(keep) {
+  const field = part(".name-field");
+  if (field.hidden) return;
+  const name = field.value.trim();
+  field.hidden = true;
+  part(".naming .name").hidden = false;
+  part(".naming .name").focus();
+  if (keep && name && name !== part(".name-text").textContent) void window.mirador.send({ kind: "name", name });
+}
+
+part(".naming .name").addEventListener("click", () => {
+  const field = part(".name-field");
+  field.value = part(".name-text").textContent;
+  part(".naming .name").hidden = true;
+  field.hidden = false;
+  field.focus();
+  field.select();
+});
+part(".name-field").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== "Escape") return;
+  event.preventDefault();
+  endRenaming(event.key === "Enter");
+});
+part(".name-field").addEventListener("blur", () => endRenaming(true));
+
 /** The newest failure seen: only a newer one makes the pet react, not the one it shows on opening. */
 let seenFailureAt = null;
 
@@ -791,7 +827,7 @@ function reactToFailure(failedAt = 0) {
 function draw(pet) {
   part(".pet").className = `pet ${pet.mode}`;
   part(".stage").title = `Pat ${pet.name}`;
-  part(".name").textContent = pet.name;
+  part(".name-text").textContent = pet.name;
   say(pet.line ?? LINES[pet.mode] ?? "", pet.thinking === true);
   part(".mode").value = pet.mode;
   part(".alignment").value = pet.alignment;

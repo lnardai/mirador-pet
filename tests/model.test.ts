@@ -30,7 +30,7 @@ describe("cleanLine", () => {
 
 describe("askForLine", () => {
   const config = { url: "http://model/v1", model: "m", key: null };
-  const request = { name: "Pip", mode: "calming", style: "slow and soothing", alignment: "chaotic good", nature: "kind but wild", event: "The user just patted you." };
+  const request = { name: "Argus", mode: "calming", style: "slow and soothing", alignment: "chaotic good", nature: "kind but wild", event: "The user just patted you." };
 
   test("is the model's sentence", async () => {
     const fetchLine = (async () => Response.json({ choices: [{ message: { content: "Breathe, friend." } }] })) as unknown as typeof fetch;
@@ -48,7 +48,7 @@ describe("askForLine", () => {
 
 test("messagesFor adds the fact to the event when there is one", async () => {
   const { messagesFor } = await import("../model.ts");
-  const request = { name: "Pip", mode: "calming", style: "s", alignment: "true neutral", nature: "n", event: "The user just patted you." };
+  const request = { name: "Argus", mode: "calming", style: "s", alignment: "true neutral", nature: "n", event: "The user just patted you." };
   expect(messagesFor(request)[1]!.content).toBe("The user just patted you.");
   expect(messagesFor({ ...request, fact: "They have worked 4 days in a row." })[1]!.content).toContain("4 days in a row");
 });
@@ -113,7 +113,7 @@ describe("the model dialog", () => {
     rmSync(folder, { recursive: true });
   });
 
-  const request = { name: "Pip", mode: "quiet", style: "s", alignment: "true neutral", nature: "n", event: "e" };
+  const request = { name: "Argus", mode: "quiet", style: "s", alignment: "true neutral", nature: "n", event: "e" };
   const answering = (status: number, body = "{}") => (async () => new Response(body, { status })) as unknown as typeof fetch;
 
   test("a test says why it got no line, without repeating the server", async () => {

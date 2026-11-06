@@ -90,21 +90,32 @@ const TOOL_STATS_EVERY_MS = 5000;
 /** How long the last usage report stays good before it is read again. */
 const USAGE_FRESH_MS = 10 * 60 * 1000;
 
-const newPet = (): Pet => ({ name: "Pip", mode: "encouraging", alignment: "neutral good", pats: 0 });
+const newPet = (): Pet => ({ name: "Argus", mode: "encouraging", alignment: "neutral good", pats: 0 });
 
 function petOf(context: CanvasPluginContext<ShownPet>): Pet {
   const pet = { ...newPet(), ...(context.storage.get(PET_KEY) as Partial<Pet> | undefined) };
   return { ...pet, mode: isMode(pet.mode) ? pet.mode : newPet().mode, alignment: isAlignment(pet.alignment) ? pet.alignment : newPet().alignment };
 }
 
-type PetAction = { kind: "pat" } | { kind: "mode"; mode: Mode } | { kind: "alignment"; alignment: Alignment };
+type PetAction = { kind: "pat" } | { kind: "mode"; mode: Mode } | { kind: "alignment"; alignment: Alignment } | { kind: "name"; name: string };
+
+/** As long as a name can be, which the view's field also keeps to, so it fits under the pet. */
+const LONGEST_NAME = 24;
+
+/** The name the user typed on one line and at a sensible length; it reaches the model's prompt and Mirador's tab. */
+export function cleanName(name: unknown): string {
+  const cleaned = typeof name === "string" ? name.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim() : "";
+  if (!cleaned) throw new Error("The pet needs a name.");
+  return [...cleaned].slice(0, LONGEST_NAME).join("").trimEnd();
+}
 
 function changed(pet: Pet, action: unknown): Pet {
-  const { kind, mode, alignment } = (action ?? {}) as { kind?: string; mode?: unknown; alignment?: unknown };
+  const { kind, mode, alignment, name } = (action ?? {}) as { kind?: string; mode?: unknown; alignment?: unknown; name?: unknown };
+  if (kind === "name") return { ...pet, name: cleanName(name) };
   if (kind === "pat") return { ...pet, pats: pet.pats + 1 };
   if (kind === "mode" && isMode(mode)) return { ...pet, mode };
   if (kind === "alignment" && isAlignment(alignment)) return { ...pet, alignment };
-  throw new Error(`The pet can only be patted, set to a mode (${MODES.join(", ")}) or set to an alignment (${Object.keys(ALIGNMENT_STYLES).join(", ")}).`);
+  throw new Error(`The pet can only be patted, named, set to a mode (${MODES.join(", ")}) or set to an alignment (${Object.keys(ALIGNMENT_STYLES).join(", ")}).`);
 }
 
 const statsFor = (context: CanvasPluginContext<ShownPet>) => statsOf(activityOf(context.storage.get(ACTIVITY_KEY)), context.conversationId, Date.now());
@@ -169,6 +180,7 @@ function eventOf(action: unknown, pet: Pet, wardrobe: Wardrobe): string {
   if (kind === "wear") return `The user just gave you the ${SKINS[wardrobe.bodySkin].name}.`;
   if (kind === "pat") return `The user just patted you (pat number ${pet.pats}).`;
   if (kind === "alignment") return `The user just made you ${pet.alignment}.`;
+  if (kind === "name") return `The user just named you ${pet.name}. React to your new name.`;
   return `The user just switched you to ${pet.mode} mode.`;
 }
 
@@ -292,7 +304,8 @@ const host: CanvasHost<ShownPet> = {
     const pet = changed(petOf(context), action);
     context.storage.set(PET_KEY, pet);
     const turned = pet.mode !== item.data.mode || pet.alignment !== item.data.alignment;
-    const config = turned || Date.now() - lastLineAt >= PATS_BETWEEN_LINES_MS ? readConfig() : null;
+    const renamed = pet.name !== item.data.name;
+    const config = turned || renamed || Date.now() - lastLineAt >= PATS_BETWEEN_LINES_MS ? readConfig() : null;
     const thinking = config !== null || (item.data.thinking === true && newestAsk.has(item.id));
     const stats = statsFor(context);
     context.change(item.id, { title: pet.name, data: { ...item.data, ...pet, line: turned ? undefined : item.data.line, thinking, stats } });
@@ -313,8 +326,9 @@ const host: CanvasHost<ShownPet> = {
     if (!shown) return null;
     const event = milestone ?? (find ? "You just found a mystery box for them while they worked! Tell them to open it, without guessing what is inside." : null);
     const config = event ? readConfig() : null;
-    context.change(shown.id, { data: { ...shown.data, stats: statsFor(context), wardrobe: shownWardrobe(wardrobeIn(context)), ...(config ? { thinking: true } : {}) } });
-    if (event && config) speak(shown.id, petOf(context), event, undefined, config, context);
+    const pet = petOf(context);
+    context.change(shown.id, { title: pet.name, data: { ...shown.data, name: pet.name, stats: statsFor(context), wardrobe: shownWardrobe(wardrobeIn(context)), ...(config ? { thinking: true } : {}) } });
+    if (event && config) speak(shown.id, pet, event, undefined, config, context);
     return null;
   },
   /** Counts the agent's tool calls and turns everywhere, and shows them on the pet in a conversation the user has touched since Mirador started; messages stay with `note`. */
