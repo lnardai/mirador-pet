@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** An OpenAI-compatible chat endpoint the pet asks for its lines, one sentence at a time. */
 export interface ModelConfig {
@@ -17,6 +17,9 @@ export const CONFIG_FILE = join(homedir(), ".config", "mirador-pet", "model.env"
 
 /** A line slower than this isn't worth waiting for: the pet says one of its own. */
 const TIMEOUT_MS = 8000;
+
+/** A test may have to wait for the server to load its model. */
+const TEST_TIMEOUT_MS = 30_000;
 
 const LONGEST_LINE = 140;
 
@@ -51,6 +54,82 @@ export function readConfig(file = CONFIG_FILE): ModelConfig | null {
   } catch {
     return null;
   }
+}
+
+/** The model settings as the dialog gets them: everything but the key, of which it only learns whether there is one. */
+export interface ShownModelSettings {
+  url: string;
+  model: string;
+  keySet: boolean;
+}
+
+export const shownModelSettings = (config: ModelConfig | null): ShownModelSettings => ({ url: config?.url ?? "", model: config?.model ?? "", keySet: Boolean(config?.key) });
+
+const originOf = (url: string) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+};
+
+const isWebUrl = (url: string) => URL.canParse(url) && /^https?:$/.test(new URL(url).protocol);
+
+const HAS_CONTROL_CHARACTER = /[\x00-\x1f\x7f]/;
+
+const typed = (value: unknown, label: string) => {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (HAS_CONTROL_CHARACTER.test(text)) throw new Error(`${label} can't hold line breaks or control characters.`);
+  return text;
+};
+
+/**
+ * The config the dialog's form asks for, or null with its URL and model both empty, which leaves the pet its built-in lines.
+ * An empty key field keeps the saved key, but only for the same server: a key is never sent somewhere new unless typed again.
+ */
+export function configFromForm(form: unknown, current: ModelConfig | null): ModelConfig | null {
+  const { url: rawUrl, model: rawModel, key: rawKey, removeKey } = (form ?? {}) as Record<string, unknown>;
+  const url = typed(rawUrl, "The server URL").replace(/\/+$/, "");
+  const model = typed(rawModel, "The model");
+  const key = typed(rawKey, "The API key");
+  if (!url && !model) return null;
+  if (!url || !model) throw new Error("Fill in both the server URL and the model, or leave both empty for built-in lines only.");
+  if (!isWebUrl(url)) throw new Error("The server URL should look like http://host:8080/v1.");
+  if (key) return { url, model, key };
+  const sameServer = current !== null && originOf(current.url) === originOf(url);
+  return { url, model, key: sameServer && removeKey !== true ? current.key : null };
+}
+
+const MODEL_SETTINGS = ["PET_MODEL_URL", "PET_MODEL", "PET_MODEL_KEY"];
+
+/** The settings file's text with the model settings replaced in place; comments and other settings stay. */
+export function withConfigIn(text: string, config: ModelConfig | null): string {
+  const wanted = new Map<string, string>();
+  if (config) {
+    wanted.set("PET_MODEL_URL", config.url);
+    wanted.set("PET_MODEL", config.model);
+    if (config.key) wanted.set("PET_MODEL_KEY", config.key);
+  }
+  const lines = text.split("\n").flatMap((line) => {
+    const name = /^\s*(?:export\s+)?([A-Z_]+)\s*=/.exec(line)?.[1];
+    if (!name || !MODEL_SETTINGS.includes(name)) return [line];
+    const value = wanted.get(name);
+    wanted.delete(name);
+    return value === undefined ? [] : [`${name}=${value}`];
+  });
+  const body = lines.join("\n").replace(/\n+$/, "");
+  const added = [...wanted].map(([name, value]) => `${name}=${value}`);
+  return `${[...(body ? [body] : []), ...added].join("\n")}\n`;
+}
+
+/** Saves the config so only the user can read it, as it may hold a key, and all at once, so a line never reads half a file. */
+export function writeConfig(config: ModelConfig | null, file = CONFIG_FILE) {
+  const target = existsSync(file) ? realpathSync(file) : file;
+  mkdirSync(dirname(target), { recursive: true });
+  const text = existsSync(target) ? readFileSync(target, "utf8") : "# Where the Mirador pet gets its lines: an OpenAI-compatible endpoint.\n";
+  const written = `${target}.${process.pid}.tmp`;
+  writeFileSync(written, withConfigIn(text, config), { mode: 0o600 });
+  renameSync(written, target);
 }
 
 export const readUnlockAll = (file = CONFIG_FILE) => readSettings(file).get("PET_UNLOCK_ALL") === "1";
@@ -93,9 +172,16 @@ export function messagesFor({ name, mode, style, alignment, nature, event, fact 
   ];
 }
 
-/** One sentence from the model, or null when there is no config, the model is slow or unreachable, or it said nothing. */
-export async function askForLine(request: LineRequest, config = readConfig(), fetchLine: typeof fetch = fetch): Promise<string | null> {
-  if (!config) return null;
+export type ModelAnswer = { ok: true; line: string } | { ok: false; problem: string };
+
+/** Why a response without a line came back, in words the user can act on; never the server's own text, which could repeat what it was sent. */
+function statusProblem(status: number): string {
+  if (status === 401 || status === 403) return "The server refused the API key.";
+  if (status === 404) return "Nothing answers at that URL, or it doesn't know that model. The URL usually ends in /v1.";
+  return `The server answered with an error (${status}).`;
+}
+
+async function requestLine(request: LineRequest, config: ModelConfig, fetchLine: typeof fetch, timeoutMs: number): Promise<ModelAnswer> {
   try {
     const response = await fetchLine(`${config.url}/chat/completions`, {
       method: "POST",
@@ -107,13 +193,28 @@ export async function askForLine(request: LineRequest, config = readConfig(), fe
         chat_template_kwargs: { enable_thinking: false },
         messages: messagesFor(request),
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return { ok: false, problem: statusProblem(response.status) };
     const body = (await response.json()) as { choices?: { message?: { content?: string | null } }[] };
     const content = body.choices?.[0]?.message?.content;
-    return content ? cleanLine(content) : null;
-  } catch {
-    return null;
+    const line = content ? cleanLine(content) : null;
+    return line ? { ok: true, line } : { ok: false, problem: "The model answered with nothing." };
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") return { ok: false, problem: `The server didn't answer within ${timeoutMs / 1000} seconds.` };
+    if (error instanceof SyntaxError) return { ok: false, problem: "That URL doesn't answer like an OpenAI-compatible server." };
+    return { ok: false, problem: "Can't reach the server." };
   }
+}
+
+/** One sentence from the model, or null when there is no config, the model is slow or unreachable, or it said nothing. */
+export async function askForLine(request: LineRequest, config = readConfig(), fetchLine: typeof fetch = fetch): Promise<string | null> {
+  if (!config) return null;
+  const answer = await requestLine(request, config, fetchLine, TIMEOUT_MS);
+  return answer.ok ? answer.line : null;
+}
+
+/** Asks the model for a line the way the pet does, and says why when it can't get one. */
+export function testModel(request: LineRequest, config: ModelConfig, fetchLine: typeof fetch = fetch): Promise<ModelAnswer> {
+  return requestLine(request, config, fetchLine, TEST_TIMEOUT_MS);
 }

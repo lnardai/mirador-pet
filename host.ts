@@ -1,5 +1,5 @@
 import type { CanvasHost, CanvasPluginContext, CanvasPluginStorage } from "./mirador/api.ts";
-import { askForLine, readAlwaysFind, readConfig, readUnlockAll, type ModelConfig } from "./model.ts";
+import { askForLine, configFromForm, readAlwaysFind, readConfig, readUnlockAll, shownModelSettings, testModel, writeConfig, type ModelConfig } from "./model.ts";
 import { RAIN_LASTS_MS, activityOf, newMilestones, statFacts, statsOf, tooManyFailures, withMessageIn, withToolEnded, withToolOutcome, withTurnEnded, type Stats, type ToolOutcome } from "./stats.ts";
 import { readUsage, usageFacts, type UsageNumbers } from "./usage.ts";
 import { HATS, SKINS, afterMessage, describeFind, openBox, owned, wardrobeOf, wearing, withMilestoneBoxes, type Wardrobe } from "./wardrobe.ts";
@@ -234,6 +234,14 @@ function open(item: { id: string; data: ShownPet }, context: CanvasPluginContext
   return null;
 }
 
+/** Tries what the dialog's form holds, without saving it. */
+function tryModel(form: unknown, context: CanvasPluginContext<ShownPet>) {
+  const config = configFromForm(form, readConfig());
+  if (!config) return { ok: false, problem: "Fill in the server URL and the model to test them." };
+  const pet = petOf(context);
+  return testModel({ name: pet.name, mode: pet.mode, style: MODE_STYLES[pet.mode], alignment: pet.alignment, nature: ALIGNMENT_STYLES[pet.alignment], event: "The user just checked that you can talk." }, config);
+}
+
 const host: CanvasHost<ShownPet> = {
   items: {
     pet: {
@@ -269,6 +277,13 @@ const host: CanvasHost<ShownPet> = {
     instructions: "- pet: show the user's pet in the tab beside the canvas when they ask for it.",
   },
   action(item, action, context) {
+    const modelAction = (action as { kind?: unknown } | null)?.kind;
+    if (modelAction === "model-settings") return shownModelSettings(readConfig());
+    if (modelAction === "model-test") return tryModel(action, context);
+    if (modelAction === "model-save") {
+      writeConfig(configFromForm(action, readConfig()));
+      return shownModelSettings(readConfig());
+    }
     userContexts.set(context.conversationId, context);
     refreshUsage(context);
     const kind = (action as { kind?: unknown } | null)?.kind;

@@ -199,6 +199,22 @@ style.textContent = `
   .stats div { padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, CanvasText 6%, transparent); text-align: center; }
   .stats dt { font-size: 11px; opacity: 0.65; }
   .stats dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .settings-open { position: absolute; top: 6px; right: 6px; z-index: 2; width: 26px; height: 26px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: rgba(255, 255, 255, 0.55); color: #222; cursor: pointer; }
+  .settings-open:hover { background: #fff; }
+  .model-dialog { width: min(300px, calc(100vw - 48px)); padding: 14px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); border-radius: 12px; background: Canvas; color: CanvasText; }
+  .model-dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+  .model-dialog h3 { margin: 0 0 4px; font-size: 14px; }
+  .model-dialog p { margin: 0 0 10px; font-size: 12px; opacity: 0.7; }
+  .model-dialog label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 12px; }
+  .model-dialog input:not([type="checkbox"]) { display: block; box-sizing: border-box; width: 100%; margin-top: 2px; padding: 4px 6px; font: inherit; font-weight: 400; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); background: Canvas; color: inherit; }
+  .model-dialog .remove-key { font-weight: 400; }
+  .model-dialog .remove-key[hidden] { display: none; }
+  .model-dialog .result { min-height: 1.4em; margin-bottom: 8px; font-size: 12px; overflow-wrap: anywhere; }
+  .model-dialog .result.bad { color: #d6336c; }
+  .model-dialog .actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .model-dialog button { padding: 3px 12px; font: inherit; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); background: Canvas; color: inherit; cursor: pointer; }
+  .model-dialog .save { font-weight: 600; background: color-mix(in srgb, CanvasText 12%, Canvas); }
+  .model-dialog button:disabled { cursor: default; opacity: 0.5; }
   .usage { width: 100%; max-width: 340px; }
   .usage h4 { margin: 8px 0 0; font-size: 11px; font-weight: 600; opacity: 0.65; text-transform: uppercase; letter-spacing: 0.04em; text-align: center; }
   .scene.raining { background: linear-gradient(#77838f, #a9b3bb); }
@@ -328,6 +344,7 @@ root.innerHTML = `
       <div class="ground"></div>
       <div class="rain">${RAINDROPS}</div>
       <div class="boxes"></div>
+      <button class="settings-open" type="button" title="Where the pet's lines come from" aria-label="Model settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></button>
       <div class="speech"><div class="bubble"></div></div>
       <div class="stage">${PET_SVG}</div>
     </div>
@@ -346,6 +363,22 @@ root.innerHTML = `
     <dl class="stats here"></dl>
     <section class="usage" hidden><h4>Last 30 days</h4><dl class="stats month"></dl></section>
   </div>
+  <dialog class="model-dialog" aria-labelledby="model-title">
+    <form method="dialog">
+      <h3 id="model-title">Model</h3>
+      <p>Any OpenAI-compatible chat server. Leave the URL and model empty and the pet uses its built-in lines.</p>
+      <label>Server URL <input class="model-url" type="url" placeholder="http://host:8080/v1" autocomplete="off" spellcheck="false"></label>
+      <label>Model <input class="model-name" type="text" placeholder="active" autocomplete="off" spellcheck="false"></label>
+      <label>API key <input class="model-key" type="password" autocomplete="new-password" spellcheck="false"></label>
+      <label class="remove-key" hidden><input class="model-remove-key" type="checkbox"> Remove the saved key</label>
+      <div class="result" role="status"></div>
+      <div class="actions">
+        <button class="close" type="button">Cancel</button>
+        <button class="test" type="button">Test</button>
+        <button class="save" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
   <div class="ceremony" hidden role="dialog" aria-label="Opening a box">
     <div>
       <div class="reveal"><div class="rays"></div>${BIG_BOX}<div class="prize"></div></div>
@@ -678,6 +711,74 @@ part(".wear-prize").addEventListener("click", () => {
 });
 part(".keep-prize").addEventListener("click", closeCeremony);
 document.addEventListener("keydown", (event) => event.key === "Escape" && part(".ceremony").classList.contains("opened") && closeCeremony());
+
+let savedModel = { url: "", model: "", keySet: false };
+
+const originOf = (url) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+};
+
+/** What the key field promises: a saved key stays only for the server it was saved for. */
+function drawKeyField() {
+  const savedKeyApplies = savedModel.keySet && originOf(part(".model-url").value.trim()) === originOf(savedModel.url);
+  const removing = part(".model-remove-key").checked;
+  part(".remove-key").hidden = !savedKeyApplies;
+  part(".model-key").placeholder = !savedModel.keySet ? "None" : !savedKeyApplies ? "Enter the key for this server" : removing ? "None" : "Saved, leave empty to keep";
+}
+
+function showModelResult(text, bad = false) {
+  part(".model-dialog .result").textContent = text;
+  part(".model-dialog .result").classList.toggle("bad", bad);
+}
+
+const modelForm = () => ({
+  url: part(".model-url").value,
+  model: part(".model-name").value,
+  key: part(".model-key").value,
+  removeKey: part(".remove-key").hidden ? false : part(".model-remove-key").checked,
+});
+
+/** Runs a dialog action with its buttons off; what the host refuses shows in the dialog. */
+async function modelAction(kind, waiting, done) {
+  const buttons = [part(".model-dialog .test"), part(".model-dialog .save")];
+  buttons.forEach((button) => (button.disabled = true));
+  showModelResult(waiting);
+  try {
+    done(await window.mirador.send({ kind, ...modelForm() }));
+  } catch (error) {
+    showModelResult(error.message, true);
+  } finally {
+    buttons.forEach((button) => (button.disabled = false));
+  }
+}
+
+part(".settings-open").addEventListener("click", async () => {
+  savedModel = await window.mirador.send({ kind: "model-settings" });
+  part(".model-url").value = savedModel.url;
+  part(".model-name").value = savedModel.model;
+  part(".model-key").value = "";
+  part(".model-remove-key").checked = false;
+  showModelResult("");
+  drawKeyField();
+  part(".model-dialog").showModal();
+});
+part(".model-url").addEventListener("input", drawKeyField);
+part(".model-remove-key").addEventListener("change", drawKeyField);
+part(".model-dialog .close").addEventListener("click", () => part(".model-dialog").close());
+part(".model-dialog .test").addEventListener("click", () =>
+  modelAction("model-test", "Testing…", (answer) => (answer.ok ? showModelResult(`It works: “${answer.line}”`) : showModelResult(answer.problem, true))),
+);
+part(".model-dialog form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void modelAction("model-save", "Saving…", (saved) => {
+    savedModel = saved;
+    part(".model-dialog").close();
+  });
+});
 
 /** The newest failure seen: only a newer one makes the pet react, not the one it shows on opening. */
 let seenFailureAt = null;
