@@ -60,21 +60,28 @@ Each request sets `chat_template_kwargs: { enable_thinking: false }`, because re
 
 Counted from the day you install it, in every conversation, whether or not Argus is open.
 
+**This chat**
+
 | Tile | What it counts |
 | --- | --- |
-| Messages here | Messages you sent in this conversation |
-| Agent turns | The agent's turns in this conversation |
-| Tool calls here | The agent's finished tool calls in this conversation |
+| Messages | Messages you sent |
+| Agent turns | The agent's turns |
+| Tool calls | The agent's finished tool calls |
 | Failed tools | How many of those failed |
-| Session | Time since your first message in this conversation |
+| Session | Time since your first message |
 | Active | Time between messages sent less than 10 minutes apart |
 | Longest focus | The longest run of messages without a longer gap |
-| Day streak | Days in a row with a message, in any conversation |
-| After midnight | Messages sent between midnight and 5 am, in any conversation |
+
+**All chats**
+
+| Tile | What it counts |
+| --- | --- |
+| Day streak | Days in a row with a message |
+| After midnight | Messages sent between midnight and 5 am |
 
 ### Last 30 days
 
-If the `mirador` command is on the PATH of Mirador's host, Argus runs `mirador usage --json --since 30d` in the background, at most every 10 minutes, and shows tokens written, cache hits, tools succeeded, your favourite tool, how quickly you usually reply and permission prompts. Without the command, this group doesn't appear.
+Argus runs `mirador usage --json --since 30d` in the background, at most every 10 minutes, using the command beside the running Mirador, or else the one on the PATH. It shows tokens written, cache hits, tools succeeded, your favourite tool, how quickly you usually reply and permission prompts, across all chats. If the command can't be found or fails, this group doesn't appear.
 
 ### Failures and rain
 

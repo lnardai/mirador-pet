@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readUsage, toolName, usageFacts, usageNumbers } from "../usage.ts";
+import { readUsage, toolName, usageCommands, usageFacts, usageNumbers } from "../usage.ts";
 
 const report = {
   totals: { inputTokens: 100, outputTokens: 5000, cachedReadTokens: 700, cachedWriteTokens: 200, successPercent: 97.8, medianReplySeconds: 42, permissionPrompts: 3 },
@@ -34,6 +34,15 @@ describe("the usage report", () => {
     expect(await readUsage(() => Promise.reject(new Error("not found")))).toBeNull();
     expect(await readUsage(() => Promise.resolve("not json"))).toBeNull();
     expect(await readUsage(() => Promise.resolve(JSON.stringify(report)))).toMatchObject({ favouriteTool: "ask" });
+  });
+
+  test("the command beside the running host comes before the one on the PATH", () => {
+    expect(usageCommands("/opt/mirador/host/main.ts", () => true)).toEqual(["/opt/mirador/bin/mirador", "mirador"]);
+  });
+
+  test("without a command beside the host, the PATH is all there is", () => {
+    expect(usageCommands("/opt/app/main.js", () => false)).toEqual(["mirador"]);
+    expect(usageCommands("", () => true)).toEqual(["mirador"]);
   });
 
   test("tool names read as people call them", () => {

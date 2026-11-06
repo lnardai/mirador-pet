@@ -222,8 +222,10 @@ style.textContent = `
   .naming .name:hover svg, .naming .name:focus-visible svg { opacity: 0.9; }
   .naming .name[hidden], .name-field[hidden] { display: none; }
   .name-field { width: 170px; padding: 1px 6px; font: inherit; font-weight: 600; text-align: center; user-select: text; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 40%, transparent); background: Canvas; color: inherit; }
-  .usage { width: 100%; max-width: 340px; }
-  .usage h4 { margin: 8px 0 0; font-size: 11px; font-weight: 600; opacity: 0.65; text-transform: uppercase; letter-spacing: 0.04em; text-align: center; }
+  .stat-group { width: 100%; max-width: 340px; margin-top: 4px; }
+  .stat-group[hidden] { display: none; }
+  .stat-group h4 { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font-size: 11px; font-weight: 600; color: color-mix(in srgb, CanvasText 65%, transparent); text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+  .stat-group h4::before, .stat-group h4::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, CanvasText 20%, transparent); }
   .scene.raining { background: linear-gradient(#77838f, #a9b3bb); }
   .scene.dawn.raining, .scene.dusk.raining { background: linear-gradient(#6d6a80, #a39aa3); }
   .scene.night.raining { background: linear-gradient(#12172b, #232b47); }
@@ -370,8 +372,9 @@ root.innerHTML = `
       <h4>Hat skin</h4><div class="tiles hat-skins"></div>
       <h4>Body skin</h4><div class="tiles body-skins"></div>
     </details>
-    <dl class="stats here"></dl>
-    <section class="usage" hidden><h4>Last 30 days</h4><dl class="stats month"></dl></section>
+    <section class="stat-group this-chat" hidden><h4>This chat</h4><dl class="stats here"></dl></section>
+    <section class="stat-group all-chats" hidden><h4>All chats</h4><dl class="stats everywhere"></dl></section>
+    <section class="stat-group usage" hidden><h4>Last 30 days</h4><dl class="stats month"></dl></section>
   </div>
   <dialog class="model-dialog" aria-labelledby="model-title">
     <form method="dialog">
@@ -577,19 +580,22 @@ function drawUsage() {
 
 function drawStats() {
   const stats = shownStats;
-  if (!stats) return part(".here").replaceChildren();
-  const rows = [
-    ["Messages here", String(stats.messages)],
+  part(".this-chat").hidden = !stats;
+  part(".all-chats").hidden = !stats;
+  if (!stats) return;
+  part(".here").replaceChildren(...statTiles([
+    ["Messages", String(stats.messages)],
     ["Agent turns", String(stats.turns ?? 0)],
-    ["Tool calls here", String(stats.toolCalls ?? 0)],
+    ["Tool calls", String(stats.toolCalls ?? 0)],
     ["Failed tools", String(stats.failedTools ?? 0)],
     ["Session", stats.firstAt === null ? "–" : duration(Date.now() - stats.firstAt)],
     ["Active", duration(stats.activeMs)],
     ["Longest focus", duration(stats.longestStreakMs)],
+  ]));
+  part(".everywhere").replaceChildren(...statTiles([
     ["Day streak", `${stats.dayStreak} ${stats.dayStreak === 1 ? "day" : "days"}`],
     ["After midnight", String(stats.nightOwl)],
-  ];
-  part(".here").replaceChildren(...statTiles(rows));
+  ]));
 }
 
 setInterval(() => (drawStats(), drawSky()), STATS_TICK_MS);
