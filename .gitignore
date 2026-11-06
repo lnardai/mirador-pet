@@ -5,3 +5,12 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Local agent and issue-tracker files
+.agents/
+.beads/
+.claude/
+.codex/
+.cursor/
+AGENTS.md
+CLAUDE.md
